@@ -1,0 +1,171 @@
+name: Build Bepar VPN 1.6.1 Final
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'BeparVPN-1.6.1-Final.zip'
+      - '.github/workflows/build-apk.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bepar-final-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify ZIP
+        run: |
+          set -euo pipefail
+          test -s BeparVPN-1.6.1-Final.zip
+          unzip -t BeparVPN-1.6.1-Final.zip
+
+      - name: Extract source
+        run: |
+          set -euo pipefail
+          mkdir -p source
+          unzip -q BeparVPN-1.6.1-Final.zip -d source
+
+          test -f source/settings.gradle.kts
+          test -f source/build.gradle.kts
+          test -f source/app/build.gradle.kts
+          test -f source/scripts/build_libxray.sh
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install Pillow
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          accept-android-sdk-licenses: true
+
+      - name: Install Android packages
+        run: |
+          set -euo pipefail
+
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
+
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      # Fix minimum SDK required by BeparVpnTileService
+      - name: Fix minimum Android API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("source/app/build.gradle.kts")
+          s = p.read_text()
+
+          pattern = r'(?m)^(\s*minSdk\s*=\s*)23(\s*(?://.*)?)$'
+          updated, count = re.subn(pattern, r'\g<1>24\g<2>', s)
+
+          if count:
+              p.write_text(updated)
+              print("minSdk changed from 23 to 24")
+          elif re.search(r'(?m)^\s*minSdk\s*=\s*24\b', s):
+              print("minSdk already set to 24")
+          else:
+              raise SystemExit(
+                  "Could not safely locate minSdk = 23 or minSdk = 24"
+              )
+          PY
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Verify project
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python scripts/verify_project.py
+
+      - name: Build libXray
+        working-directory: source
+        run: |
+          set -euo pipefail
+
+          bash scripts/build_libxray.sh
+
+          test -s app/libs/libXray.aar
+
+      - name: Run unit tests
+        working-directory: source
+        run: |
+          gradle --no-daemon --stacktrace \
+            :app:testDebugUnitTest
+
+      # Lint report is retained but does not block APK compilation.
+      - name: Run Android Lint
+        continue-on-error: true
+        working-directory: source
+        run: |
+          gradle --no-daemon --stacktrace :app:lintDebug
+
+      - name: Build APK
+        working-directory: source
+        run: |
+          set -euo pipefail
+
+          gradle --no-daemon --stacktrace \
+            :app:assembleDebug
+
+          test -s app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeparVPN-1.6.1-Final-APK
+          path: source/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostic reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeparVPN-Build-Reports
+          path: |
+            source/app/build/reports/**
+            source/app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14

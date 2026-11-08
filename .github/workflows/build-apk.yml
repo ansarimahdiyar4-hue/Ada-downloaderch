@@ -75,7 +75,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           sdkmanager --install \
             'platforms;android-35' \
             'build-tools;35.0.0' \
@@ -98,8 +97,7 @@ jobs:
 
       - name: Verify project
         working-directory: source
-        run: |
-          python scripts/verify_project.py
+        run: python scripts/verify_project.py
 
       - name: Build libXray
         working-directory: source
@@ -111,26 +109,19 @@ jobs:
 
       - name: Run unit tests
         working-directory: source
-        run: |
-          gradle --no-daemon --stacktrace \
-            :app:testDebugUnitTest
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
 
       - name: Run Android Lint
         continue-on-error: true
         working-directory: source
-        run: |
-          gradle --no-daemon --stacktrace \
-            :app:lintDebug
+        run: gradle --no-daemon --stacktrace :app:lintDebug
 
       - name: Build APK
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-
-          gradle --no-daemon --stacktrace \
-            :app:assembleDebug
-
+          gradle --no-daemon --stacktrace :app:assembleDebug
           test -s app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK
@@ -141,7 +132,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload reports
+      - name: Upload build reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
